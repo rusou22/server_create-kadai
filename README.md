@@ -110,3 +110,120 @@ docker-compose ps
 
 ## 7. Git 関連（ソースコード管理）  
 リポジトリのクローンやコミット方法については、授業資料「3章・4章」を参照してください。  
+
+
+8. データベース設計（使用SQL）
+
+本プロジェクトでは、ユーザー情報・ツーリング／ドライブ記録・関連データを管理するため、以下のテーブル構成を採用しています。
+
+users テーブル
+
+ユーザーアカウント情報を管理するテーブルです。
+ログイン認証や投稿データの所有者管理に使用します。
+
+CREATE TABLE users (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(50) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+routes テーブル
+
+ツーリング・ドライブのメインとなる記録情報を管理するテーブルです。
+
+CREATE TABLE routes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(100) NOT NULL,
+  summary VARCHAR(255) NULL,
+  description TEXT NULL,
+  prefecture_code TINYINT UNSIGNED NOT NULL,
+  map_url TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_routes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_routes_pref (prefecture_code),
+  INDEX idx_routes_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+投稿タイトル・概要・詳細説明を管理
+
+都道府県コードを用いた地域別表示に対応
+
+ユーザー削除時に投稿も削除されるよう外部キー制約を設定
+
+routes テーブルの user_id 制約変更
+
+将来的な仕様変更を考慮し、user_id を NULL 許可に変更しています。
+
+ALTER TABLE routes
+MODIFY user_id BIGINT UNSIGNED NULL;
+
+route_prefectures テーブル
+
+1つのルートが複数の都道府県を跨ぐ場合に対応するための中間テーブルです。
+
+CREATE TABLE route_prefectures (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  route_id BIGINT UNSIGNED NOT NULL,
+  prefecture_code TINYINT UNSIGNED NOT NULL,
+  is_main TINYINT(1) NOT NULL DEFAULT 0,
+  CONSTRAINT fk_route_prefectures_route
+    FOREIGN KEY (route_id)
+    REFERENCES routes(id)
+    ON DELETE CASCADE,
+  INDEX idx_rp_route (route_id),
+  INDEX idx_rp_pref (prefecture_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+route_points テーブル
+
+ルート内の立ち寄り地点（開始・経由・終了）を管理するテーブルです。
+
+CREATE TABLE route_points (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  route_id BIGINT UNSIGNED NOT NULL,
+  point_type ENUM('start','middle','goal') NOT NULL,
+  label VARCHAR(100) NOT NULL,
+  url TEXT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  CONSTRAINT fk_route_points_route
+    FOREIGN KEY (route_id)
+    REFERENCES routes(id)
+    ON DELETE CASCADE,
+  INDEX idx_points_route (route_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+route_photos テーブル
+
+ルートに紐づく写真データを管理するテーブルです。
+
+CREATE TABLE route_photos (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  route_id BIGINT UNSIGNED NOT NULL,
+  file_name VARCHAR(255) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_route_photos_route
+    FOREIGN KEY (route_id)
+    REFERENCES routes(id)
+    ON DELETE CASCADE,
+  INDEX idx_route_photos_route (route_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+routes テーブルへのカラム追加
+
+ルート情報拡張のため、住所情報と外部サイトURLを追加しています。
+
+ALTER TABLE routes
+  ADD COLUMN address VARCHAR(255) NULL AFTER description,
+  ADD COLUMN site_url TEXT NULL AFTER map_url;
+
+
+address：目的地や走行エリアの補足情報
+
+site_url：観光地・立ち寄り先の公式サイトなど
