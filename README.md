@@ -23,29 +23,46 @@ docker compose version
 Docker Compose を使う場合、以下のようなフォルダ構成にします。  
 
 ```
-[任意のプロジェクトフォルダ]
-├── docker-compose.yml
-├── htdocs/            ← Webアプリのソースコードを置く
-├── php/               ← PHP用コンテナ設定
+Drive_Mapping/
+├── docker-compose.yml        ← Docker Compose 設定ファイル
+├── htdocs/                   ← Webアプリのソースコードを置く
+│   ├── config/               ← 共通設定ファイル
+│   │   ├── auth.php          ← 認証関連
+│   │   ├── csrf.php          ← CSRF対策
+│   │   ├── db.php            ← DB接続設定
+│   │   ├── helpers.php       ← 共通ヘルパー関数
+│   │   └── prefectures.php  ← 都道府県マスタ
+│   │
+│   ├── routes/               ← 各種処理用PHP
+│   │   ├── delete.php
+│   │   ├── edit.php
+│   │   ├── favorites.php
+│   │   ├── index.php
+│   │   ├── like.php
+│   │   ├── show.php
+│   │   └── update.php
+│   │
+│   ├── uploads/              ← 投稿画像保存用ディレクトリ
+│   │   └── routes/
+│   │
+│   ├── create.php            ← 記録登録画面
+│   ├── index.php             ← トップページ
+│   ├── japan_map.php         ← 日本地図表示
+│   ├── login.php             ← ログイン画面
+│   ├── logout.php            ← ログアウト処理
+│   ├── prefecture.php        ← 都道府県別ページ
+│   ├── register.php          ← 新規登録画面
+│   └── map.jpg               ← 日本地図画像
+│
+├── php/                      ← PHP用コンテナ設定
 │   ├── Dockerfile
 │   └── php.ini
+
 ```
 
----
 
-## 4. フォルダ作成手順  
 
-1. 任意の場所に作業用フォルダを作成します（例：`ドキュメント/Projects/docker-kadai`）。  
-2. `docker-kadai` フォルダ内に以下を作成します。  
-   - `htdocs` フォルダ（アプリのソース格納用）  
-   - `php` フォルダ（PHP コンテナ用設定ファイル置き場）  
-     - `Dockerfile`（リポジトリ内の内容をコピー）  
-     - `php.ini`（リポジトリ内の内容をコピー）  
-3. `docker-kadai` の直下に `docker-compose.yml` を配置します（リポジトリ内の内容をコピー）。  
-
----
-
-## 5. コンテナのビルド & 起動  
+## 4. コンテナのビルド & 起動  
 
 ### ビルド（初回のみ必要）  
 ```bash
@@ -74,7 +91,7 @@ docker-compose up -d --build
 
 ---
 
-## 6. 起動確認  
+## 5. 起動確認  
 
 以下の方法でコンテナが起動しているか確認できます。  
 
