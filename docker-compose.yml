@@ -1,33 +1,137 @@
-version: '3.7'
+# Docker Compose の定義ファイル
+# ここでは 3つのサービス（db / phpmyadmin / web）を立ち上げる構成
 
 services:
-  mysql:
-    image: mysql:5.7
-    volumes:
-      - db_data:/var/lib/mysql
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: 'password'
+  # =============================
+  # 1) MySQL（データベース）
+  # =============================
+  db:
+    # MySQL 8.0 の公式イメージを使用
+    image: mysql:8.0
 
-  phpmyadmin:
-    depends_on:
-      - mysql
-    image: phpmyadmin/phpmyadmin
-    environment:
-      PMA_HOST: mysql
+    # コンテナ名（docker ps で見える名前）
+    container_name: drive_mapping_db
+
+    # コンテナが落ちても自動で再起動（PC再起動時なども復帰しやすい）
     restart: always
+
+    # MySQL初期設定（初回起動時に反映される）
+    environment:
+      # root ユーザーのパスワード
+      MYSQL_ROOT_PASSWORD: rootpassword
+
+      # 初回に作成されるDB名
+      MYSQL_DATABASE: drive_mapping
+
+      # アプリ用ユーザー（rootをアプリが使わないようにするため）
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: apppass
+
+      # タイムゾーン（日時の保存/表示がズレにくくなる）
+      TZ: Asia/Tokyo
+
+    # MySQLサーバー起動時の追加オプション
+    command: >
+      # 認証方式を mysql_native_password にする（互換性のため）
+      --default-authentication-plugin=mysql_native_password
+      # 文字コードを utf8mb4（絵文字もOK）に
+      --character-set-server=utf8mb4
+      # 照合順序（ソート/比較のルール）
+      --collation-server=utf8mb4_unicode_ci
+
+    # データ永続化（コンテナを消してもDBデータが残る）
+    volumes:
+      # named volume db_data を MySQLのデータ保存先へマウント
+      - db_data:/var/lib/mysql
+
+      # （任意）初期SQLを自動投入したいときの仕組み
+      # ./db/init 配下に .sql や .sh を置くと、初回起動時に自動実行される
+      # - ./db/init:/docker-entrypoint-initdb.d
+
+    # ポート公開（ホストPC:コンテナ）
+    # ローカルPCの 3306 にアクセスすると MySQLコンテナの 3306 へ繋がる
+    ports:
+      - "3306:3306"
+
+
+  # =============================
+  # 2) phpMyAdmin（DBをブラウザで触る管理画面）
+  # =============================
+  phpmyadmin:
+    # phpMyAdminの公式イメージ
+    image: phpmyadmin/phpmyadmin:latest
+
+    # コンテナ名
+    container_name: drive_mapping_phpmyadmin
+
+    # 自動再起動
+    restart: always
+
+    # db サービスが起動してから phpmyadmin を起動する（依存関係）
+    depends_on:
+      - db
+
+    # phpMyAdmin 側の接続設定
+    environment:
+      # 接続先ホスト（Composeのサービス名 db を指定すると内部ネットワークで解決される）
+      PMA_HOST: db
+
+      # phpMyAdminにログインするユーザー（ここではroot）
+      PMA_USER: root
+      PMA_PASSWORD: rootpassword
+
+      # タイムゾーン
+      TZ: Asia/Tokyo
+
+    # ブラウザで開く用のポート
+    # http://localhost:8081 で phpMyAdmin にアクセスできる
     ports:
       - "8081:80"
 
-  php-apache:
-    build: ./php
-    volumes:
-      - ./htdocs:/var/www/html
-    restart: always
-    ports:
-      - "80:80"
-    depends_on:
-      - mysql
 
+  # =============================
+  # 3) Web（PHP/Apacheなどアプリ本体）
+  # =============================
+  web:
+    # 自作Dockerfileからビルドして使う
+    build:
+      # ビルドの基準ディレクトリ（プロジェクトルート）
+      context: .
+      # 使用するDockerfileの場所
+      dockerfile: ./php/Dockerfile
+
+    # コンテナ名
+    container_name: drive_mapping_web
+
+    # 自動再起動
+    restart: always
+
+    # DBが起動してからwebを起動（起動順の依存）
+    depends_on:
+      - db
+
+    # ソースコードや設定ファイルをコンテナへマウント
+    volumes:
+      # ローカルの ./htdocs を、コンテナのApache公開ディレクトリへ
+      # → つまりローカルで編集すると即コンテナ側に反映される
+      - ./htdocs:/var/www/html
+
+      # PHP設定ファイル（php.ini）をコンテナへ差し替え
+      - ./php/php.ini:/usr/local/etc/php/php.ini
+
+    # ブラウザアクセス用
+    # http://localhost:8080 でアプリにアクセスできる
+    ports:
+      - "8080:80"
+
+    # コンテナ内のタイムゾーン
+    environment:
+      TZ: Asia/Tokyo
+
+
+# =============================
+# named volume 定義
+# =============================
 volumes:
-    db_data: {}
+  # db_data は MySQL のデータ保存用（永続化）
+  db_data:
