@@ -96,10 +96,10 @@ docker-compose up -d --build
 以下の方法でコンテナが起動しているか確認できます。  
 
 ### Docker Desktop で確認  
-- `Containers` タブを開き、`docker-kadai` 内に以下が表示されていることを確認してください。  
-  - `mysql-1`  
-  - `phpmyadmin`  
-  - `php-apache-1`  
+- `Containers` タブを開き、`drive_mapping` 内に以下が表示されていることを確認してください。  
+  - `drive_mapping_phpmyadmin`  
+  - `drive_mapping_db`  
+  - `drive_mapping_web`  
 
 ### コマンドで確認  
 ```bash
