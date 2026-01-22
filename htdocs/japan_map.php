@@ -24,16 +24,12 @@ foreach ($stmt->fetchAll() as $row) {
 
 function heat_color(int $cnt): string {
   if ($cnt <= 0) return 'rgba(0,0,0,0)';
-  if ($cnt <= 10) return 'rgba(82, 190, 0, 0.76)';
-  if ($cnt <= 20) return 'rgba(237, 233, 0, 0.89)';
-  return 'rgba(240, 23, 23, 0.88)';
+  if ($cnt <= 10) return 'rgba(82, 190, 0, 0.30)';
+  if ($cnt <= 20) return 'rgba(237, 233, 0, 0.30)';
+  return 'rgba(240, 23, 23, 0.30)';
 }
 
-/**
- * 既存の japan_map.php の coords を維持（構造そのまま）
- * - coords は <area> 用
- * - points は SVG overlay 用（同じ座標を使う）
- */
+
 $areas = [
   // code, name, coords (x1,y1,...), points (x,y x,y ...)
   [47,'沖縄県','76,774,98,774,99,818,76,817','76,774 98,774 99,818 76,817'],
@@ -172,7 +168,7 @@ $areas = [
     z-index: 4;
     width: 100%;
     height: 100%;
-    display: none;         
+    display: none;         /* OFFの時は非表示 */
     pointer-events: none;  
   }
 
@@ -181,13 +177,13 @@ $areas = [
 </style>
 
 <div class="dm-map-wrap" id="dmMapWrap">
-  
+
   <div class="dm-map-togglebar">
     <span>カラー</span>
     <button type="button" id="dmHeatBtn" aria-pressed="false">OFF</button>
   </div>
 
-  
+
   <div class="dm-map-legend" aria-label="凡例">
     <span class="chip"><span class="dot" style="background: rgba(82, 190, 0, 0.76)"></span>1〜10件</span>
     <span class="chip"><span class="dot" style="background: rgba(237, 233, 0, 0.89)"></span>11〜20件</span>
@@ -195,7 +191,6 @@ $areas = [
 
   </div>
 
-  
   <img src="/map.jpg" alt="日本地図" usemap="#japan_map" style="max-width:100%; height:auto; display:block;">
 
   <map name="japan_map">
@@ -209,7 +204,7 @@ $areas = [
     <?php endforeach; ?>
   </map>
 
-  <!-- ✅ SVGは“上に重ねるだけ” -->
+
   <svg class="dm-heat-overlay" viewBox="0 0 894 894" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
     <?php foreach ($areas as [$code, $name, $coords, $points]): ?>
       <?php $cnt = $counts[(int)$code] ?? 0; ?>
