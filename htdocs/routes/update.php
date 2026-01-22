@@ -90,7 +90,6 @@ function ensure_thumbnail_is_first(PDO $pdo, int $routeId, string $uploadBase, s
     $first = $photos[0];
     $firstId = (int)$first['id'];
 
-    // 現在 thumb.jpg を持っている写真（複数あると困るので全部取る）
     $thumbOwners = [];
     foreach ($photos as $p) {
         if ((string)($p['thumb_name'] ?? '') === 'thumb.jpg') {
@@ -128,17 +127,15 @@ function ensure_thumbnail_is_first(PDO $pdo, int $routeId, string $uploadBase, s
         }
     }
 
-    // 先頭写真を thumb.jpg にする（すでにそうなら上書きだけ）
+    // 先頭写真を thumb.jpg にする
     $firstFile = (string)$first['file_name'];
     $firstSrcPath = $uploadBase . '/' . $firstFile;
     $thumbPath = $thumbDir . '/thumb.jpg';
 
     if (!is_file($firstSrcPath)) {
-        // 元画像が無い（本来あり得ないが）→ 何もしない
         return;
     }
 
-    // 先頭が既に別の thumb_name を持っている場合、そのファイルを消しておく（整理）
     $oldFirstThumbName = (string)($first['thumb_name'] ?? '');
     if ($oldFirstThumbName !== '' && $oldFirstThumbName !== 'thumb.jpg') {
         @unlink($thumbDir . '/' . $oldFirstThumbName);
@@ -191,10 +188,10 @@ $goalAddress = trim($_POST['goal_address'] ?? '');
 /* ===== バリデーション ===== */
 $errors = [];
 if ($title === '' || mb_strlen($title) > 100) $errors[] = 'タイトルは必須（100文字以内）です';
-if ($summary !== '' && mb_strlen($summary) > 255) $errors[] = '概要は255文字以内にしてください';
+if ($summary !== '' && mb_strlen($summary) > 255) $errors[] = '概要は250文字以内にしてください';
 if (!$mainPref || !isset($prefMap[$mainPref])) $errors[] = 'メイン都道府県が不正です';
 
-if ($address !== '' && mb_strlen($address) > 255) $errors[] = '住所は255文字以内にしてください';
+if ($address !== '' && mb_strlen($address) > 255) $errors[] = '住所は250文字以内にしてください';
 if ($site_url !== '' && !filter_var($site_url, FILTER_VALIDATE_URL)) $errors[] = '目的地のサイトは正しいURL形式で入力してください';
 
 if ($errors) {
@@ -293,7 +290,6 @@ try {
         }
     }
 
-    /* ④ 写真削除（thumbも削除） */
     $deleteIds = $_POST['delete_photo_ids'] ?? [];
     if (is_array($deleteIds) && $deleteIds) {
         $deleteIds = array_values(array_filter(array_map('intval', $deleteIds), fn($v) => $v > 0));
@@ -375,7 +371,7 @@ try {
         }
     }
 
-    /* ✅ 最後に必ず「1枚目＝thumb.jpg」に揃える */
+    /*  最後に必ず「1枚目＝thumb.jpg」に揃える */
     ensure_thumbnail_is_first($pdo, $routeId, $uploadBase, $thumbDir);
 
     $pdo->commit();
