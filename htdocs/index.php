@@ -10,11 +10,13 @@ session_start();
 $pdo = db();
 $prefMap = prefecture_map();
 
-/* 投稿数 */
+/* 投稿数（メイン都道府県のみ＆0件は表示しない） */
 $stmt = $pdo->query('
   SELECT prefecture_code, COUNT(*) AS cnt
-  FROM routes
+  FROM route_prefectures
+  WHERE is_main = 1
   GROUP BY prefecture_code
+  HAVING cnt > 0
 ');
 $rows = $stmt->fetchAll();
 
@@ -22,6 +24,10 @@ $counts = [];
 foreach ($rows as $r) {
     $counts[(int)$r['prefecture_code']] = (int)$r['cnt'];
 }
+
+/* 念のため：0件を除外（0埋めがどこかにあっても確実に消える） */
+$counts = array_filter($counts, fn($v) => (int)$v > 0);
+
 ?>
 <!doctype html>
 <html lang="ja">
@@ -46,6 +52,15 @@ foreach ($rows as $r) {
             border: 1px solid #ddd;
             border-radius: 12px;
             padding: 14px;
+            background: #fff;
+        }
+
+        
+        .card.side {
+            border: none;
+            border-radius: 0;
+            padding: 0;
+            background: transparent;
         }
 
         .auth {
@@ -65,7 +80,6 @@ foreach ($rows as $r) {
         /* ===== 地図UI改善 ===== */
         .map-wrap {
             max-width: 530px;
-            /* ← 地図サイズ調整はここ */
             margin: 0 auto;
         }
 
@@ -112,15 +126,15 @@ foreach ($rows as $r) {
 
     <div class="wrap">
 
-        <!-- 日本地図 -->
+        <!-- 日本地図（枠あり） -->
         <div class="card">
             <div class="map-wrap">
                 <?php include __DIR__ . '/japan_map.php'; ?>
             </div>
         </div>
 
-        <!-- サイドメニュー -->
-        <div class="card">
+        <!-- サイド（枠なし） -->
+        <div class="card side">
             <h3>メニュー</h3>
             <ul>
                 <li><a href="/routes/index.php">投稿一覧</a></li>
@@ -138,6 +152,7 @@ foreach ($rows as $r) {
             <?php else: ?>
                 <ul>
                     <?php foreach ($counts as $code => $cnt): ?>
+                        <?php if ((int)$cnt === 0) continue; //  ?>
                         <?php $name = $prefMap[$code] ?? ('コード:' . $code); ?>
                         <li>
                             <a href="/prefecture.php?code=<?= (int)$code ?>">
@@ -157,6 +172,8 @@ foreach ($rows as $r) {
         const prefectureCounts = <?= json_encode($counts, JSON_UNESCAPED_UNICODE) ?>;
         const prefectureNames = <?= json_encode($prefMap, JSON_UNESCAPED_UNICODE) ?>;
 
+        // ※ japan_map.php を変更しない方針なら、area に data-pref が無い可能性があります
+        // data-pref が無い場合は何もしません（エラーにならない）
         document.querySelectorAll('area[data-pref]').forEach(area => {
             const code = Number(area.dataset.pref);
             const cnt = prefectureCounts[code] ?? 0;
