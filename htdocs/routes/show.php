@@ -2,61 +2,24 @@
 
 declare(strict_types=1);
 
-/*
-|--------------------------------------------------------------------------
-| show.php（投稿詳細ページ）
-|--------------------------------------------------------------------------
-| 目的：
-|   - 指定された投稿（routes）を詳細表示する。
-|   - 写真・説明・ルート地点（start/middle/goal）・通過都道府県（メイン/サブ）を見せる。
-|   - ログイン時は「いいね（お気に入り）」の追加/解除ができる。
-|   - 投稿者本人は「編集」「削除」ができる。
-|
-| 重要な互換方針（本プロジェクトの統一ルール）：
-|   - routes.map_url は「目的地サイトURL」として扱う（site_url ではない）
-|   - route_points.url カラムは「住所文字列」を入れる用途として運用中（カラム名は url だが住所）
-*/
-
-/* -----------------------------
- * 依存ファイル読み込み
- * -----------------------------
- * db.php         : DB接続（PDO）を返す db()
- * helpers.php    : h() など共通関数（XSS対策）
- * prefectures.php: prefecture_map()（都道府県コード→名称）
- * csrf.php       : csrf_token()（いいね/削除などPOSTフォームのCSRF対策）
- */
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/helpers.php';
 require_once __DIR__ . '/../config/prefectures.php';
 require_once __DIR__ . '/../config/csrf.php';
 
-/* -----------------------------
- * セッション開始
- * - ログイン状態、ユーザーID/ユーザー名を参照するため
- * ----------------------------- */
 session_start();
 
-/* -----------------------------
- * 初期化：DB接続・都道府県マップ
- * ----------------------------- */
 $pdo = db();
 $prefMap = prefecture_map();
 
-/* -----------------------------
- * 投稿ID取得（GET）
- * - /routes/show.php?id=xx を想定
- * - 不正な場合は400
- * ----------------------------- */
+/* 投稿ID取得 */
 $id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
 if (!$id) {
     http_response_code(400);
     exit('不正なIDです');
 }
 
-/* -----------------------------
- * 投稿本体取得（routes）
- * - 存在しなければ404
- * ----------------------------- */
+/* 投稿本体 */
 $stmt = $pdo->prepare('SELECT * FROM routes WHERE id = :id');
 $stmt->execute([':id' => $id]);
 $route = $stmt->fetch();
@@ -66,28 +29,14 @@ if (!$route) {
     exit('投稿が見つかりません');
 }
 
-/* -----------------------------
- * 投稿者本人判定
- * - ログイン中かつ routes.user_id と一致する場合のみ true
- * - true のとき「編集」「削除」を表示する
- * ----------------------------- */
+/* 投稿者本人判定 */
 $isOwner = isset($_SESSION['user_id']) && ((int)$_SESSION['user_id'] === (int)$route['user_id']);
 
-/* ----------------------------------------------------------------------
- * いいね（お気に入り）
- * ----------------------------------------------------------------------
- * - likeCount : この投稿の総いいね数（全ユーザー合計）
- * - isLiked   : ログインユーザーが既にいいね済みか
- *
- * ※ いいねの追加/解除は routes/like.php にPOSTする
- */
-
-/* いいね数 */
+/* ===== いいね：件数 & 自分がいいね済みか ===== */
 $likeCountStmt = $pdo->prepare('SELECT COUNT(*) FROM route_likes WHERE route_id = :id');
 $likeCountStmt->execute([':id' => $id]);
 $likeCount = (int)$likeCountStmt->fetchColumn();
 
-/* 自分がいいね済みか */
 $isLiked = false;
 if (isset($_SESSION['user_id'])) {
     $chk = $pdo->prepare('SELECT 1 FROM route_likes WHERE route_id = :rid AND user_id = :uid');
@@ -95,12 +44,7 @@ if (isset($_SESSION['user_id'])) {
     $isLiked = (bool)$chk->fetchColumn();
 }
 
-/* ----------------------------------------------------------------------
- * 通過都道府県（メイン／サブ）
- * ----------------------------------------------------------------------
- * - route_prefectures から取得し、is_main=1 をメインとして表示
- * - 取れない場合は後方互換で routes.prefecture_code を使う
- */
+/* 通過都道府県（メイン／サブ） */
 $stmt = $pdo->prepare('
   SELECT prefecture_code, is_main
   FROM route_prefectures
@@ -122,19 +66,13 @@ foreach ($prefRows as $r) {
         $subPrefNames[] = $name;
     }
 }
-
-/* 後方互換：route_prefectures が無い古い投稿用 */
 if ($mainPrefName === null) {
+    // 後方互換：古い投稿用
     $code = (int)$route['prefecture_code'];
     $mainPrefName = $prefMap[$code] ?? ('コード:' . $code);
 }
 
-/* ----------------------------------------------------------------------
- * ルート地点（start/middle/goal）
- * ----------------------------------------------------------------------
- * - route_points を sort_order で並べて表示
- * - url カラムは「住所」として利用（重要）
- */
+/* ルート地点（※ urlカラムを「住所」として扱う） */
 $stmt = $pdo->prepare('
   SELECT point_type, label, url
   FROM route_points
@@ -144,12 +82,7 @@ $stmt = $pdo->prepare('
 $stmt->execute([':id' => $id]);
 $points = $stmt->fetchAll();
 
-/* ----------------------------------------------------------------------
- * 写真
- * ----------------------------------------------------------------------
- * - route_photos を sort_order → id の順で取得
- * - 表示は /uploads/routes/{id}/{file_name}
- */
+/* 写真 */
 $stmt = $pdo->prepare('
   SELECT id, file_name, sort_order
   FROM route_photos
@@ -161,32 +94,21 @@ $photos = $stmt->fetchAll();
 
 $uploadUrlBase = '/uploads/routes/' . (int)$id;
 
-/*
-|--------------------------------------------------------------------------
-| 住所＆目的地サイトURL（統一仕様）
-|--------------------------------------------------------------------------
-| - routes.address : 住所（テキスト）
-| - routes.map_url : 目的地サイトURL（site_url ではない）
-| - 表示時はURL形式かどうかを検証して「サイトを開く」を出し分ける
-|
-| ※ このファイルには target="_blank" が入っているが、
-|    「タブを開かずアプリ内で完結したい」場合は後で調整可能（要件に合わせる）
-*/
+/* ✅ 住所＆目的地サイトURL（互換方針：map_url を「目的地サイトURL」として扱う） */
 $address = trim((string)($route['address'] ?? ''));
-$siteUrl = trim((string)($route['map_url'] ?? ''));
+$siteUrl = trim((string)($route['map_url'] ?? ''));  // ← ここが重要（site_url ではない）
 $siteUrlValid = ($siteUrl !== '' && filter_var($siteUrl, FILTER_VALIDATE_URL));
 
-/* ルート表示用：point_type のラベル */
+/* ルート表示用 */
 $pointLabelMap = [
     'start' => 'スタート',
     'middle' => '中間',
     'goal' => 'ゴール',
 ];
 
-/* 表示用テキスト（未入力判定に利用） */
+/* 表示用 */
 $summary = trim((string)($route['summary'] ?? ''));
 $desc = trim((string)($route['description'] ?? ''));
-
 ?>
 <!doctype html>
 <html lang="ja">
@@ -196,11 +118,6 @@ $desc = trim((string)($route['description'] ?? ''));
     <title><?= h($route['title']) ?> | Drive Mapping</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        /* -----------------------------
-         * 画面スタイル（詳細ページ）
-         * - 左：写真/説明/ルート
-         * - 右：概要/都道府県/住所/目的地サイト
-         * ----------------------------- */
         :root {
             --border: #e6e6e6;
             --muted: #666;
@@ -371,7 +288,7 @@ $desc = trim((string)($route['description'] ?? ''));
             color: var(--muted);
         }
 
-        /* --- 写真スライダー（横スクロール） --- */
+        /* --- 写真スライダー --- */
         .photo-slider {
             display: flex;
             overflow-x: auto;
@@ -402,7 +319,7 @@ $desc = trim((string)($route['description'] ?? ''));
             margin-top: 6px;
         }
 
-        /* --- 写真モーダル --- */
+        /* --- モーダル --- */
         #photo-modal {
             display: none;
             position: fixed;
@@ -450,14 +367,12 @@ $desc = trim((string)($route['description'] ?? ''));
 <body>
     <div class="container">
 
-        <!-- 戻る導線 -->
         <div class="topnav">
             <div class="breadcrumb">
                 <a href="/routes/index.php">← 投稿一覧へ戻る</a>
             </div>
         </div>
 
-        <!-- ヘッダー（タイトル・投稿日・アクション） -->
         <div class="header">
             <div class="title-row">
                 <div>
@@ -469,7 +384,6 @@ $desc = trim((string)($route['description'] ?? ''));
             <div class="actions">
                 <span class="pill">いいね：<?= (int)$likeCount ?> 件</span>
 
-                <!-- ログイン中：いいねボタン（追加/解除）＋お気に入り一覧 -->
                 <?php if (isset($_SESSION['user_id'])): ?>
                     <form method="post" action="/routes/like.php" style="display:inline;">
                         <input type="hidden" name="csrf_token" value="<?= h(csrf_token()) ?>">
@@ -482,7 +396,6 @@ $desc = trim((string)($route['description'] ?? ''));
                     <a class="pill" href="/login.php">ログインしていいね</a>
                 <?php endif; ?>
 
-                <!-- 投稿者本人：編集/削除 -->
                 <?php if ($isOwner): ?>
                     <a class="pill" href="/routes/edit.php?id=<?= (int)$route['id'] ?>">編集</a>
                     <form method="post" action="/routes/delete.php" style="display:inline;"
@@ -495,12 +408,11 @@ $desc = trim((string)($route['description'] ?? ''));
             </div>
         </div>
 
-        <!-- 2カラム（左：本文 / 右：情報） -->
         <div class="grid">
             <!-- 左：メイン -->
             <div>
 
-                <!-- 写真（横スクロール＋クリックで拡大） -->
+                <!-- 写真 -->
                 <div class="card">
                     <h3>写真</h3>
 
@@ -522,7 +434,7 @@ $desc = trim((string)($route['description'] ?? ''));
                     <?php endif; ?>
                 </div>
 
-                <!-- 説明（description） -->
+                <!-- 説明 -->
                 <div class="card">
                     <h3>説明</h3>
                     <?php if ($desc === ''): ?>
@@ -532,7 +444,7 @@ $desc = trim((string)($route['description'] ?? ''));
                     <?php endif; ?>
                 </div>
 
-                <!-- ルート（地点一覧） -->
+                <!-- ルート（住所） -->
                 <div class="card">
                     <h3>ルート</h3>
 
@@ -544,7 +456,7 @@ $desc = trim((string)($route['description'] ?? ''));
                                 <?php
                                 $type = (string)$p['point_type'];
                                 $label = trim((string)($p['label'] ?? ''));
-                                $addr = trim((string)($p['url'] ?? '')); // urlカラム＝住所
+                                $addr = trim((string)($p['url'] ?? '')); // urlカラム＝住所として扱う
                                 $tag = $pointLabelMap[$type] ?? '地点';
                                 ?>
                                 <li>
@@ -561,9 +473,10 @@ $desc = trim((string)($route['description'] ?? ''));
 
             </div>
 
-            <!-- 右：サイド（概要など） -->
+            <!-- 右：サイド -->
             <div>
 
+                <!-- まとめ情報 -->
                 <div class="card">
                     <h3>情報</h3>
 
@@ -600,13 +513,12 @@ $desc = trim((string)($route['description'] ?? ''));
                             <?php endif; ?>
                         </div>
 
-                        <!-- 目的地サイトURL（routes.map_url） -->
+
                         <div class="k">目的地サイト</div>
                         <div>
                             <?php if ($siteUrl === ''): ?>
                                 <span class="muted-text">未入力</span>
                             <?php elseif ($siteUrlValid): ?>
-                                <!-- 現状：新規タブで開く（必要なら要件に合わせて変更可能） -->
                                 <a href="<?= h($siteUrl) ?>" target="_blank" rel="noopener">サイトを開く</a>
                             <?php else: ?>
                                 <span class="muted-text">（URL形式ではありません）</span>
@@ -620,7 +532,7 @@ $desc = trim((string)($route['description'] ?? ''));
 
     </div>
 
-    <!-- 写真拡大モーダル（クリックで開く／Escで閉じる） -->
+    <!-- モーダル -->
     <div id="photo-modal" role="dialog" aria-modal="true" aria-label="写真拡大表示">
         <button id="photo-modal-close" type="button" onclick="closePhotoModal()">閉じる（Esc）</button>
         <div id="photo-modal-inner" onclick="closePhotoModal()">
@@ -629,10 +541,6 @@ $desc = trim((string)($route['description'] ?? ''));
     </div>
 
     <script>
-        /*
-         * 写真モーダルを開く
-         * - body のスクロールを止めて、写真を拡大表示する
-         */
         function openPhotoModal(src) {
             const modal = document.getElementById('photo-modal');
             const img = document.getElementById('photo-modal-img');
@@ -641,10 +549,6 @@ $desc = trim((string)($route['description'] ?? ''));
             document.body.style.overflow = 'hidden';
         }
 
-        /*
-         * 写真モーダルを閉じる
-         * - 表示を消し、画像srcをクリアしてメモリ消費を抑える
-         */
         function closePhotoModal() {
             const modal = document.getElementById('photo-modal');
             const img = document.getElementById('photo-modal-img');
@@ -653,7 +557,6 @@ $desc = trim((string)($route['description'] ?? ''));
             document.body.style.overflow = '';
         }
 
-        /* Escキーで閉じる */
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closePhotoModal();
         });
