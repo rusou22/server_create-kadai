@@ -2,31 +2,6 @@
 
 declare(strict_types=1);
 
-/*
-|--------------------------------------------------------------------------
-| update.php（投稿更新処理）
-|--------------------------------------------------------------------------
-| 目的：
-|   - edit.php から送信されたフォーム（POST）を受け取り、
-|     routes / route_prefectures / route_points / route_photos を更新する。
-|   - 写真の削除・追加もここで処理し、一覧用サムネを「必ず1枚目に統一」する。
-|
-| このファイルの役割：
-|   - 表示はしない（処理専用）
-|   - 失敗時はHTTP 400でエラーメッセージを返す
-|   - 成功時は show.php にリダイレクトする
-|
-| 重要：仕様統一ルール
-|   - routes.map_url は「目的地サイトURL」として扱う（create/edit/show/update で統一）
-|   - route_points.url カラムは「住所」を格納する用途として運用中（カラム名はurlだが住所）
-|
-| セキュリティ：
-|   - require_login() でログイン必須
-|   - csrf_verify() でCSRFチェック
-|   - 所有者確認（routes.user_id とセッション user_id が一致するか）
-|   - 画像は MIME 判定で拡張子を許可（jpg/png/webp）
-*/
-
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/config/helpers.php';
 require_once __DIR__ . '/config/auth.php';
