@@ -22,11 +22,6 @@ $counts = [];
 foreach ($rows as $r) {
     $counts[(int)$r['prefecture_code']] = (int)$r['cnt'];
 }
-
-/* ランキングTOP3 */
-$ranking = $counts;
-arsort($ranking);
-$ranking = array_slice($ranking, 0, 3, true);
 ?>
 <!doctype html>
 <html lang="ja">
@@ -134,25 +129,6 @@ $ranking = array_slice($ranking, 0, 3, true);
                     <li><a href="/routes/favorites.php">お気に入り</a></li>
                 <?php endif; ?>
             </ul>
-
-            <hr>
-
-            <h3>ランキング TOP3</h3>
-            <?php if (!$ranking): ?>
-                <p>まだ投稿がありません。</p>
-            <?php else: ?>
-                <ol>
-                    <?php foreach ($ranking as $code => $cnt): ?>
-                        <?php $name = $prefMap[$code] ?? ('コード:' . $code); ?>
-                        <li>
-                            <a href="/prefecture.php?code=<?= (int)$code ?>">
-                                <?= htmlspecialchars($name, ENT_QUOTES, 'UTF-8') ?>
-                            </a>
-                            （<?= (int)$cnt ?>件）
-                        </li>
-                    <?php endforeach; ?>
-                </ol>
-            <?php endif; ?>
 
             <hr>
 
