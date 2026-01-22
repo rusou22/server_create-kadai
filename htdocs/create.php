@@ -27,34 +27,53 @@ declare(strict_types=1);
 |   - 画像は MIME 判定で拡張子を許可（jpg/png/webp）
 */
 
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../config/helpers.php';
-require_once __DIR__ . '/../config/auth.php';
-require_once __DIR__ . '/../config/prefectures.php';
-require_once __DIR__ . '/../config/csrf.php';
+require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/config/helpers.php';
+require_once __DIR__ . '/config/auth.php';
+require_once __DIR__ . '/config/prefectures.php';
+require_once __DIR__ . '/config/csrf.php';
 
-/* -----------------------------
- * 認証・CSRF
- * ----------------------------- */
 require_login();
-csrf_verify();
 
-/* -----------------------------
- * 初期化：DB接続・都道府県マップ
- * ----------------------------- */
-$pdo = db();
+$errors = [];
+
+// 入力保持用
+$title = '';
+$summary = '';
+$description = '';
+$address = '';
+$site_url = ''; // フォームは site_url、DB保存は map_url に入れる
+$prefecture_code = '';
+$sub_prefectures = [];
+
+$startLabel = '';
+$startAddress = '';
+$middleLabels = [];
+$middleAddresses = [];
+$goalLabel = '';
+$goalAddress = '';
+
 $prefMap = prefecture_map();
 
-/* ----------------------------------------------------------------------
- * 画像ヘルパー
- * ----------------------------------------------------------------------
- * safe_image_extension():
- *   - 一時ファイルのMIMEタイプから拡張子を決定（偽装拡張子対策）
- * create_thumbnail():
- *   - 画像を縮小して JPEG のサムネを生成する（最大 360x270）
- */
+/* ========= 写真アップロード用ヘルパ ========= */
+function normalize_files_array(array $files): array
+{
+    $result = [];
+    if (!isset($files['name']) || !is_array($files['name'])) return $result;
 
-/* ===== 画像ヘルパ ===== */
+    $count = count($files['name']);
+    for ($i = 0; $i < $count; $i++) {
+        $result[] = [
+            'name' => $files['name'][$i] ?? '',
+            'type' => $files['type'][$i] ?? '',
+            'tmp_name' => $files['tmp_name'][$i] ?? '',
+            'error' => $files['error'][$i] ?? UPLOAD_ERR_NO_FILE,
+            'size' => $files['size'][$i] ?? 0,
+        ];
+    }
+    return $result;
+}
+
 function safe_image_extension(string $tmpPath): ?string
 {
     $finfo = finfo_open(FILEINFO_MIME_TYPE);
@@ -69,6 +88,7 @@ function safe_image_extension(string $tmpPath): ?string
     };
 }
 
+/* ========= サムネ生成 ========= */
 function create_thumbnail(string $srcPath, string $dstPath, int $maxW = 360, int $maxH = 270): void
 {
     $info = getimagesize($srcPath);
@@ -85,19 +105,18 @@ function create_thumbnail(string $srcPath, string $dstPath, int $maxW = 360, int
     };
     if (!$srcImg) throw new RuntimeException('対応していない画像形式です');
 
-    // 元画像が大きい場合のみ縮小（拡大はしない）
     $scale = min($maxW / $w, $maxH / $h, 1.0);
     $newW = (int)max(1, floor($w * $scale));
     $newH = (int)max(1, floor($h * $scale));
 
-    // 背景を白で埋めたキャンバスに縮小画像を描画
     $dstImg = imagecreatetruecolor($newW, $newH);
+
+    // 背景白（PNG透過等の簡易対策）
     $white = imagecolorallocate($dstImg, 255, 255, 255);
     imagefilledrectangle($dstImg, 0, 0, $newW, $newH, $white);
 
     imagecopyresampled($dstImg, $srcImg, 0, 0, 0, 0, $newW, $newH, $w, $h);
 
-    // サムネは JPEG 固定（軽量化）
     if (!imagejpeg($dstImg, $dstPath, 82)) {
         imagedestroy($srcImg);
         imagedestroy($dstImg);
@@ -108,424 +127,427 @@ function create_thumbnail(string $srcPath, string $dstPath, int $maxW = 360, int
     imagedestroy($dstImg);
 }
 
-/**
- * ✅ サムネを「1枚目（sort_order最小）」に統一する
- *
- * 目的：
- *   - 一覧ページ（index.php など）で常に同じルールでサムネを表示できるようにするため。
- *
- * 仕様：
- *   - thumb_name='thumb.jpg' は常に「先頭写真（sort_order最小）」だけが持つ
- *   - もし先頭以外が誤って thumb.jpg を持っていたら、別名サムネに退避して矛盾を解消する
- *
- * 入力：
- *   - $uploadBase : 元画像が保存されているディレクトリ（.../uploads/routes/{id}）
- *   - $thumbDir   : サムネ保存ディレクトリ（.../uploads/routes/{id}/thumbs）
- */
-function ensure_thumbnail_is_first(PDO $pdo, int $routeId, string $uploadBase, string $thumbDir): void
-{
-    // route_photos を表示順（sort_order）で取得
-    $stmt = $pdo->prepare('
-        SELECT id, file_name, thumb_name, sort_order
-        FROM route_photos
-        WHERE route_id = ?
-        ORDER BY sort_order ASC, id ASC
-    ');
-    $stmt->execute([$routeId]);
-    $photos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
 
-    // 写真が無ければ thumb.jpg を削除して終了（任意の整理）
-    if (!$photos) {
-        @unlink($thumbDir . '/thumb.jpg');
-        return;
+    // 基本項目
+    $title = trim($_POST['title'] ?? '');
+    $summary = trim($_POST['summary'] ?? '');
+    $description = trim($_POST['description'] ?? '');
+
+    // 住所＆目的地サイト
+    $address = trim($_POST['address'] ?? '');
+    $site_url = trim($_POST['site_url'] ?? '');
+
+    // 都道府県
+    $mainPref = filter_input(INPUT_POST, 'prefecture_code', FILTER_VALIDATE_INT);
+    $sub_prefectures = $_POST['sub_prefectures'] ?? [];
+
+    // ルート（住所）
+    $startLabel = trim($_POST['start_label'] ?? '');
+    $startAddress = trim($_POST['start_address'] ?? '');
+    $middleLabels = $_POST['middle_label'] ?? [];
+    $middleAddresses = $_POST['middle_address'] ?? [];
+    $goalLabel = trim($_POST['goal_label'] ?? '');
+    $goalAddress = trim($_POST['goal_address'] ?? '');
+
+    // 写真
+    $photoFiles = [];
+    if (!empty($_FILES['photos'])) {
+        $photoFiles = normalize_files_array($_FILES['photos']);
     }
 
-    // 先頭写真（これを thumb.jpg にする）
-    $first = $photos[0];
-    $firstId = (int)$first['id'];
+    /* ---------- バリデーション ---------- */
+    if ($title === '' || mb_strlen($title) > 100) $errors[] = 'タイトルは必須（100文字以内）です';
+    if ($summary !== '' && mb_strlen($summary) > 255) $errors[] = '概要は255文字以内にしてください';
+    if (!$mainPref || !isset($prefMap[$mainPref])) $errors[] = 'メインで通った都道府県を選択してください';
 
-    // 現在 thumb.jpg を持っている写真IDを収集（複数あると困る）
-    $thumbOwners = [];
-    foreach ($photos as $p) {
-        if ((string)($p['thumb_name'] ?? '') === 'thumb.jpg') {
-            $thumbOwners[] = (int)$p['id'];
-        }
+    if ($address !== '' && mb_strlen($address) > 255) $errors[] = '住所は255文字以内にしてください';
+
+    if ($site_url !== '' && !filter_var($site_url, FILTER_VALIDATE_URL)) {
+        $errors[] = '目的地のサイトは正しいURL形式で入力してください';
     }
 
-    // 先頭以外が thumb.jpg を持っていたら別名サムネへ退避
-    if ($thumbOwners) {
-        foreach ($thumbOwners as $ownerId) {
-            if ($ownerId === $firstId) continue;
+    // 写真最大10枚
+    $validPhotoCandidates = array_filter(
+        $photoFiles,
+        fn($f) => ($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE
+    );
+    if (count($validPhotoCandidates) > 10) {
+        $errors[] = '写真は最大10枚までです';
+    }
 
-            // owner の file_name を探す
-            foreach ($photos as $pp) {
-                if ((int)$pp['id'] === $ownerId) {
-                    $ownerFile = (string)$pp['file_name'];
+    if (!$errors) {
+        $pdo = db();
+
+        try {
+            $pdo->beginTransaction();
+
+            /* ① routes
+               ✅ address は address
+               ✅ 目的地サイトURLは map_url に入れる（互換維持）
+            */
+            $stmt = $pdo->prepare('
+              INSERT INTO routes (user_id, title, summary, description, address, map_url, prefecture_code)
+              VALUES (:user_id, :title, :summary, :description, :address, :map_url, :prefecture_code)
+            ');
+            $stmt->execute([
+                ':user_id' => (int)$_SESSION['user_id'],
+                ':title' => $title,
+                ':summary' => $summary !== '' ? $summary : null,
+                ':description' => $description !== '' ? $description : null,
+                ':address' => $address !== '' ? $address : null,
+                ':map_url' => $site_url !== '' ? $site_url : null,
+                ':prefecture_code' => $mainPref, // 後方互換
+            ]);
+
+            $routeId = (int)$pdo->lastInsertId();
+
+            /* ② route_prefectures（メイン／サブ） */
+            $rpStmt = $pdo->prepare('
+              INSERT INTO route_prefectures (route_id, prefecture_code, is_main)
+              VALUES (:rid, :code, :is_main)
+            ');
+            $rpStmt->execute([':rid' => $routeId, ':code' => $mainPref, ':is_main' => 1]);
+
+            foreach (array_unique($sub_prefectures) as $code) {
+                $code = (int)$code;
+                if ($code === $mainPref || !isset($prefMap[$code])) continue;
+                $rpStmt->execute([':rid' => $routeId, ':code' => $code, ':is_main' => 0]);
+            }
+
+            /* ③ route_points（地点）※ urlカラムを「住所保存」として利用 */
+            $ptStmt = $pdo->prepare('
+              INSERT INTO route_points (route_id, point_type, label, url, sort_order)
+              VALUES (:rid, :type, :label, :addr, :ord)
+            ');
+
+            if ($startLabel !== '' || $startAddress !== '') {
+                $ptStmt->execute([
+                    ':rid' => $routeId,
+                    ':type' => 'start',
+                    ':label' => ($startLabel !== '' ? $startLabel : 'スタート'),
+                    ':addr' => ($startAddress !== '' ? $startAddress : null),
+                    ':ord' => 0
+                ]);
+            }
+
+            foreach ($middleLabels as $i => $label) {
+                $label = trim((string)$label);
+                $addr = trim((string)($middleAddresses[$i] ?? ''));
+                if ($label === '' && $addr === '') continue;
+
+                $ptStmt->execute([
+                    ':rid' => $routeId,
+                    ':type' => 'middle',
+                    ':label' => ($label !== '' ? $label : '中間地点'),
+                    ':addr' => ($addr !== '' ? $addr : null),
+                    ':ord' => $i + 1
+                ]);
+            }
+
+            if ($goalLabel !== '' || $goalAddress !== '') {
+                $ptStmt->execute([
+                    ':rid' => $routeId,
+                    ':type' => 'goal',
+                    ':label' => ($goalLabel !== '' ? $goalLabel : 'ゴール'),
+                    ':addr' => ($goalAddress !== '' ? $goalAddress : null),
+                    ':ord' => 999
+                ]);
+            }
+
+            /* ④ 写真保存（uploads + route_photos） */
+            $uploadBase = __DIR__ . '/uploads/routes/' . $routeId;
+            $thumbDir = $uploadBase . '/thumbs';
+
+            // ✅ base と thumbs を確実に作る
+            if (!is_dir($uploadBase)) {
+                if (!mkdir($uploadBase, 0777, true) && !is_dir($uploadBase)) {
+                    throw new RuntimeException('アップロードフォルダを作成できません');
+                }
+            }
+            if (!is_dir($thumbDir)) {
+                if (!mkdir($thumbDir, 0777, true) && !is_dir($thumbDir)) {
+                    throw new RuntimeException('サムネフォルダを作成できません');
+                }
+            }
+
+            $photoInsert = $pdo->prepare('
+              INSERT INTO route_photos (route_id, file_name, thumb_name, sort_order)
+              VALUES (:rid, :file, :thumb, :ord)
+            ');
+
+            $sort = 0;
+            foreach ($validPhotoCandidates as $file) {
+                if (($file['error'] ?? 0) !== UPLOAD_ERR_OK) {
+                    $errors[] = '写真アップロードに失敗したファイルがあります';
                     break;
                 }
-            }
-            if (!isset($ownerFile)) continue;
-
-            // 別名サムネ（t_xxx.jpg）を作り、DBを更新
-            $newThumbName = 't_' . bin2hex(random_bytes(16)) . '.jpg';
-            $newThumbPath = $thumbDir . '/' . $newThumbName;
-            $srcPath = $uploadBase . '/' . $ownerFile;
-
-            if (is_file($srcPath)) {
-                create_thumbnail($srcPath, $newThumbPath, 360, 270);
-            }
-
-            $upd = $pdo->prepare('UPDATE route_photos SET thumb_name=? WHERE id=? AND route_id=?');
-            $upd->execute([$newThumbName, $ownerId, $routeId]);
-
-            unset($ownerFile);
-        }
-    }
-
-    // 先頭写真を thumb.jpg にする（ファイルも生成/上書き）
-    $firstFile = (string)$first['file_name'];
-    $firstSrcPath = $uploadBase . '/' . $firstFile;
-    $thumbPath = $thumbDir . '/thumb.jpg';
-
-    if (!is_file($firstSrcPath)) {
-        // 元画像が無い（通常は起きない）→ 何もしない
-        return;
-    }
-
-    // 先頭が別名サムネを持っていたら、古いサムネファイルを削除して整理
-    $oldFirstThumbName = (string)($first['thumb_name'] ?? '');
-    if ($oldFirstThumbName !== '' && $oldFirstThumbName !== 'thumb.jpg') {
-        @unlink($thumbDir . '/' . $oldFirstThumbName);
-    }
-
-    // 先頭画像から thumb.jpg を生成
-    create_thumbnail($firstSrcPath, $thumbPath, 360, 270);
-
-    // 先頭写真の thumb_name を 'thumb.jpg' に更新
-    $updFirst = $pdo->prepare('UPDATE route_photos SET thumb_name=? WHERE id=? AND route_id=?');
-    $updFirst->execute(['thumb.jpg', $firstId, $routeId]);
-}
-
-/* ----------------------------------------------------------------------
- * 入力：更新対象ID（POST）
- * ---------------------------------------------------------------------- */
-$routeId = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
-if (!$routeId) {
-    http_response_code(400);
-    exit('不正なIDです');
-}
-
-/* ----------------------------------------------------------------------
- * 所有者確認
- * - routes を取得し、存在チェック（404）
- * - routes.user_id と session user_id の一致チェック（403）
- * ---------------------------------------------------------------------- */
-$stmt = $pdo->prepare('SELECT * FROM routes WHERE id = :id');
-$stmt->execute([':id' => $routeId]);
-$route = $stmt->fetch();
-if (!$route) {
-    http_response_code(404);
-    exit('投稿が見つかりません');
-}
-if ((int)$route['user_id'] !== (int)$_SESSION['user_id']) {
-    http_response_code(403);
-    exit('権限がありません');
-}
-
-/* ----------------------------------------------------------------------
- * フィールド取得（仕様統一）
- * ----------------------------------------------------------------------
- * routes:
- *   - title / summary / description
- *   - prefecture_code（メイン）
- *   - address（住所）
- *   - map_url（目的地サイトURLとして統一）
- *
- * route_prefectures:
- *   - prefecture_code（メイン/サブ）を入れ替え方式で更新
- *
- * route_points:
- *   - start / middle[] / goal を入れ替え方式で更新
- *   - url カラムに住所（address）を入れる（互換設計）
- */
-$title = trim($_POST['title'] ?? '');
-$summary = trim($_POST['summary'] ?? '');
-$description = trim($_POST['description'] ?? '');
-
-$address = trim($_POST['address'] ?? '');   // routes.address
-$site_url = trim($_POST['map_url'] ?? '');  // routes.map_url（=目的地サイトURL）
-
-$mainPref = filter_input(INPUT_POST, 'prefecture_code', FILTER_VALIDATE_INT);
-$sub_prefectures = $_POST['sub_prefectures'] ?? [];
-
-$startLabel = trim($_POST['start_label'] ?? '');
-$startAddress = trim($_POST['start_address'] ?? '');
-$middleLabels = $_POST['middle_label'] ?? [];
-$middleAddresses = $_POST['middle_address'] ?? [];
-$goalLabel = trim($_POST['goal_label'] ?? '');
-$goalAddress = trim($_POST['goal_address'] ?? '');
-
-/* ----------------------------------------------------------------------
- * バリデーション
- * ----------------------------------------------------------------------
- * - 必須/文字数/都道府県コード/URL形式など
- * - エラーがあれば 400 でまとめて返す（画面側で表示するなら改善余地あり）
- */
-$errors = [];
-if ($title === '' || mb_strlen($title) > 100) $errors[] = 'タイトルは必須（100文字以内）です';
-if ($summary !== '' && mb_strlen($summary) > 255) $errors[] = '概要は255文字以内にしてください';
-if (!$mainPref || !isset($prefMap[$mainPref])) $errors[] = 'メイン都道府県が不正です';
-
-if ($address !== '' && mb_strlen($address) > 255) $errors[] = '住所は255文字以内にしてください';
-if ($site_url !== '' && !filter_var($site_url, FILTER_VALIDATE_URL)) $errors[] = '目的地のサイトは正しいURL形式で入力してください';
-
-if ($errors) {
-    http_response_code(400);
-    exit(implode("\n", $errors));
-}
-
-/* ----------------------------------------------------------------------
- * 更新処理（トランザクション）
- * ----------------------------------------------------------------------
- * - DB更新とファイル処理をまとめて整合性を保つ
- * - 途中で失敗したら rollback して状態を戻す
- */
-try {
-    $pdo->beginTransaction();
-
-    /* ----------------------------------------------------------
-     * ① routes 更新（map_url=目的地サイトURLに統一）
-     * ---------------------------------------------------------- */
-    $up = $pdo->prepare('
-      UPDATE routes
-      SET title=:t, summary=:s, description=:d,
-          prefecture_code=:p, address=:a, map_url=:m
-      WHERE id=:id
-    ');
-    $up->execute([
-        ':t' => $title,
-        ':s' => $summary !== '' ? $summary : null,
-        ':d' => $description !== '' ? $description : null,
-        ':p' => $mainPref,
-        ':a' => $address !== '' ? $address : null,
-        ':m' => $site_url !== '' ? $site_url : null,
-        ':id' => $routeId
-    ]);
-
-    /* ----------------------------------------------------------
-     * ② route_prefectures 更新（入れ替え方式）
-     * - 一旦DELETEしてから、メイン＋サブをINSERT
-     * ---------------------------------------------------------- */
-    $pdo->prepare('DELETE FROM route_prefectures WHERE route_id=:rid')->execute([':rid' => $routeId]);
-
-    $rpStmt = $pdo->prepare('
-      INSERT INTO route_prefectures (route_id, prefecture_code, is_main)
-      VALUES (:rid, :code, :is_main)
-    ');
-    // メイン
-    $rpStmt->execute([':rid' => $routeId, ':code' => $mainPref, ':is_main' => 1]);
-
-    // サブ（重複排除・メインと同じものは除外）
-    foreach (array_unique($sub_prefectures) as $code) {
-        $code = (int)$code;
-        if ($code === $mainPref || !isset($prefMap[$code])) continue;
-        $rpStmt->execute([':rid' => $routeId, ':code' => $code, ':is_main' => 0]);
-    }
-
-    /* ----------------------------------------------------------
-     * ③ route_points 更新（入れ替え方式：urlカラム=住所）
-     * - 一旦DELETEしてから start / middle[] / goal を作り直す
-     * - sort_order で表示順を管理する
-     * ---------------------------------------------------------- */
-    $pdo->prepare('DELETE FROM route_points WHERE route_id=:rid')->execute([':rid' => $routeId]);
-
-    $ptStmt = $pdo->prepare('
-      INSERT INTO route_points (route_id, point_type, label, url, sort_order)
-      VALUES (:rid, :type, :label, :addr, :ord)
-    ');
-
-    // スタート（どちらか入力があれば登録）
-    if ($startLabel !== '' || $startAddress !== '') {
-        $ptStmt->execute([
-            ':rid' => $routeId,
-            ':type' => 'start',
-            ':label' => ($startLabel !== '' ? $startLabel : 'スタート'),
-            ':addr' => ($startAddress !== '' ? $startAddress : null),
-            ':ord' => 0
-        ]);
-    }
-
-    // 中間（配列で複数。空行はスキップ）
-    foreach ($middleLabels as $i => $label) {
-        $label = trim((string)$label);
-        $addr = trim((string)($middleAddresses[$i] ?? ''));
-        if ($label === '' && $addr === '') continue;
-
-        $ptStmt->execute([
-            ':rid' => $routeId,
-            ':type' => 'middle',
-            ':label' => ($label !== '' ? $label : '中間地点'),
-            ':addr' => ($addr !== '' ? $addr : null),
-            ':ord' => $i + 1
-        ]);
-    }
-
-    // ゴール（どちらか入力があれば登録。最後扱いなので大きいsort_order）
-    if ($goalLabel !== '' || $goalAddress !== '') {
-        $ptStmt->execute([
-            ':rid' => $routeId,
-            ':type' => 'goal',
-            ':label' => ($goalLabel !== '' ? $goalLabel : 'ゴール'),
-            ':addr' => ($goalAddress !== '' ? $goalAddress : null),
-            ':ord' => 999
-        ]);
-    }
-
-    /* ----------------------------------------------------------
-     * アップロード先フォルダ準備
-     * - uploads/routes/{routeId}
-     * - uploads/routes/{routeId}/thumbs
-     * ---------------------------------------------------------- */
-    $uploadBase = __DIR__ . '/../uploads/routes/' . $routeId;
-    $thumbDir = $uploadBase . '/thumbs';
-
-    if (!is_dir($uploadBase)) {
-        if (!mkdir($uploadBase, 0777, true) && !is_dir($uploadBase)) {
-            throw new RuntimeException('アップロードフォルダを作成できません');
-        }
-    }
-    if (!is_dir($thumbDir)) {
-        if (!mkdir($thumbDir, 0777, true) && !is_dir($thumbDir)) {
-            throw new RuntimeException('サムネフォルダを作成できません');
-        }
-    }
-
-    /* ----------------------------------------------------------
-     * ④ 写真削除（ファイル＋DB）
-     * - delete_photo_ids[] で指定された route_photos.id を削除
-     * - 元画像ファイルとサムネファイル（thumb_name）があれば両方削除
-     * ---------------------------------------------------------- */
-    $deleteIds = $_POST['delete_photo_ids'] ?? [];
-    if (is_array($deleteIds) && $deleteIds) {
-        $deleteIds = array_values(array_filter(array_map('intval', $deleteIds), fn($v) => $v > 0));
-        if ($deleteIds) {
-            $in = implode(',', array_fill(0, count($deleteIds), '?'));
-
-            // 削除対象のファイル名を先に取得
-            $sel = $pdo->prepare("SELECT id, file_name, thumb_name FROM route_photos WHERE route_id=? AND id IN ($in)");
-            $sel->execute(array_merge([$routeId], $deleteIds));
-            $rows = $sel->fetchAll(PDO::FETCH_ASSOC);
-
-            // ファイル削除（失敗しても致命にしないため @ を付けている）
-            foreach ($rows as $r) {
-                @unlink($uploadBase . '/' . (string)$r['file_name']);
-                $tn = (string)($r['thumb_name'] ?? '');
-                if ($tn !== '') {
-                    @unlink($thumbDir . '/' . $tn);
+                if (!is_uploaded_file($file['tmp_name'])) {
+                    $errors[] = '不正なアップロードが検出されました';
+                    break;
                 }
+
+                $ext = safe_image_extension($file['tmp_name']);
+                if ($ext === null) {
+                    $errors[] = '対応していない画像形式があります（jpg/png/webpのみ）';
+                    break;
+                }
+
+                // 元画像ファイル名
+                $newName = bin2hex(random_bytes(16)) . '.' . $ext;
+                $dest = $uploadBase . '/' . $newName;
+
+                if (!move_uploaded_file($file['tmp_name'], $dest)) {
+                    $errors[] = '写真の保存に失敗しました';
+                    break;
+                }
+
+                // ✅ 1枚目は thumb.jpg に固定（一覧側が拾える）
+                $thumbName = ($sort === 0) ? 'thumb.jpg' : ('t_' . bin2hex(random_bytes(16)) . '.jpg');
+                $thumbPath = $thumbDir . '/' . $thumbName;
+
+                create_thumbnail($dest, $thumbPath, 360, 270);
+
+                $photoInsert->execute([
+                    ':rid' => $routeId,
+                    ':file' => $newName,
+                    ':thumb' => $thumbName,
+                    ':ord' => $sort++,
+                ]);
             }
 
-            // DB削除
-            $del = $pdo->prepare("DELETE FROM route_photos WHERE route_id=? AND id IN ($in)");
-            $del->execute(array_merge([$routeId], $deleteIds));
+            if ($errors) {
+                throw new RuntimeException('写真保存エラー');
+            }
+
+            $pdo->commit();
+
+            header('Location: /routes/show.php?id=' . $routeId);
+            exit;
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            if (!$errors) $errors[] = '保存中にエラーが発生しました';
         }
     }
 
-    /* ----------------------------------------------------------
-     * ⑤ 写真追加（ファイル保存＋サムネ生成＋DB）
-     * - photos[] を複数アップロード可能
-     * - 合計10枚制限（現在枚数＋追加予定数で判定）
-     * - sort_order は末尾に追加
-     * - 追加時点では仮サムネ名（t_xxx.jpg）を作り、最後に統一処理へ
-     * ---------------------------------------------------------- */
-    if (!empty($_FILES['photos']) && isset($_FILES['photos']['tmp_name']) && is_array($_FILES['photos']['tmp_name'])) {
-
-        // 現在の枚数
-        $cntStmt = $pdo->prepare('SELECT COUNT(*) FROM route_photos WHERE route_id=?');
-        $cntStmt->execute([$routeId]);
-        $currentCount = (int)$cntStmt->fetchColumn();
-
-        // 追加予定数（UPLOAD_ERR_NO_FILE を除外）
-        $errArr = $_FILES['photos']['error'] ?? [];
-        $addCandidates = 0;
-        foreach ($errArr as $e) {
-            if ((int)$e !== UPLOAD_ERR_NO_FILE) $addCandidates++;
-        }
-
-        // 10枚制限
-        if ($currentCount + $addCandidates > 10) {
-            throw new RuntimeException('写真は合計で最大10枚までです（削除してから追加してください）');
-        }
-
-        // sort_order の開始値（既存最大+1）
-        $maxStmt = $pdo->prepare('SELECT COALESCE(MAX(sort_order), -1) FROM route_photos WHERE route_id=?');
-        $maxStmt->execute([$routeId]);
-        $sort = (int)$maxStmt->fetchColumn() + 1;
-
-        $photoInsert = $pdo->prepare('
-          INSERT INTO route_photos (route_id, file_name, thumb_name, sort_order)
-          VALUES (:rid, :file, :thumb, :ord)
-        ');
-
-        foreach ($_FILES['photos']['tmp_name'] as $i => $tmp) {
-            $err = (int)($_FILES['photos']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
-
-            // ファイルが選ばれていない枠はスキップ
-            if ($err === UPLOAD_ERR_NO_FILE) continue;
-
-            // それ以外のエラーは中断
-            if ($err !== UPLOAD_ERR_OK) throw new RuntimeException('写真アップロードに失敗したファイルがあります');
-
-            // PHPのアップロード経由かチェック（不正アップロード対策）
-            if (!is_uploaded_file($tmp)) throw new RuntimeException('不正なアップロードが検出されました');
-
-            // MIMEから拡張子を決定（許可形式のみ）
-            $ext = safe_image_extension($tmp);
-            if ($ext === null) throw new RuntimeException('対応していない画像形式があります（jpg/png/webpのみ）');
-
-            // 新規ファイル名（推測困難なランダム）
-            $newName = bin2hex(random_bytes(16)) . '.' . $ext;
-            $dest = $uploadBase . '/' . $newName;
-
-            // 元画像を保存
-            if (!move_uploaded_file($tmp, $dest)) {
-                throw new RuntimeException('写真の保存に失敗しました');
-            }
-
-            // 仮サムネ生成（最後に "thumb.jpg" を先頭へ統一する）
-            $thumbName = 't_' . bin2hex(random_bytes(16)) . '.jpg';
-            $thumbPath = $thumbDir . '/' . $thumbName;
-
-            create_thumbnail($dest, $thumbPath, 360, 270);
-
-            // DB登録
-            $photoInsert->execute([
-                ':rid' => $routeId,
-                ':file' => $newName,
-                ':thumb' => $thumbName,
-                ':ord' => $sort++,
-            ]);
-        }
-    }
-
-    /* ----------------------------------------------------------
-     * ✅ 最後に必ず「1枚目＝thumb.jpg」に揃える
-     * - 削除/追加の結果を反映した上で統一するのがポイント
-     * ---------------------------------------------------------- */
-    ensure_thumbnail_is_first($pdo, $routeId, $uploadBase, $thumbDir);
-
-    /* コミットして更新確定 */
-    $pdo->commit();
-
-    /* 更新後は詳細へ戻す */
-    header('Location: /routes/show.php?id=' . $routeId);
-    exit;
-
-} catch (Throwable $e) {
-
-    /* 失敗したらロールバック */
-    if ($pdo->inTransaction()) $pdo->rollBack();
-
-    http_response_code(400);
-    exit('更新に失敗しました：' . $e->getMessage());
+    // POST失敗時の再表示用
+    $prefecture_code = (string)($mainPref ?? '');
 }
+?>
+<!doctype html>
+<html lang="ja">
+
+<head>
+    <meta charset="utf-8">
+    <title>投稿作成 | Drive Mapping</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            margin: 20px;
+        }
+
+        form {
+            max-width: 760px;
+        }
+
+        label {
+            display: block;
+            margin-top: 14px;
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            padding: 8px;
+            margin-top: 4px;
+        }
+
+        textarea {
+            min-height: 120px;
+        }
+
+        button {
+            margin-top: 10px;
+            padding: 8px 12px;
+        }
+
+        .error {
+            color: #c00;
+        }
+
+        .topbar {
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+
+        hr {
+            margin: 18px 0;
+        }
+
+        small {
+            color: #555;
+        }
+
+        .point-block {
+            border: 1px solid #eee;
+            border-radius: 10px;
+            padding: 10px;
+            margin-top: 10px;
+        }
+
+        .point-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="topbar">
+        ログイン中：<?= h($_SESSION['user_name']) ?> さん |
+        <a href="/">トップ</a> |
+        <a href="/routes/index.php">投稿一覧</a> |
+        <a href="/logout.php">ログアウト</a>
+    </div>
+
+    <h1>投稿作成</h1>
+
+    <?php if ($errors): ?>
+        <ul class="error">
+            <?php foreach ($errors as $e): ?><li><?= h($e) ?></li><?php endforeach; ?>
+        </ul>
+    <?php endif; ?>
+
+    <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="<?= h(csrf_token()) ?>">
+
+        <label>
+            タイトル（必須）
+            <input type="text" name="title" maxlength="100" value="<?= h($title) ?>">
+        </label>
+
+        <label>
+            概要（任意）
+            <input type="text" name="summary" maxlength="255" value="<?= h($summary) ?>">
+        </label>
+
+        <label>
+            メインで通った都道府県（必須）
+            <select name="prefecture_code" required>
+                <option value="">選択してください</option>
+                <?php foreach ($prefMap as $code => $name): ?>
+                    <option value="<?= (int)$code ?>" <?= ((string)$code === (string)$prefecture_code) ? 'selected' : '' ?>>
+                        <?= h($name) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </label>
+
+        <label>
+            サブで通った都道府県（任意・複数）
+            <select name="sub_prefectures[]" multiple size="6">
+                <?php foreach ($prefMap as $code => $name): ?>
+                    <option value="<?= (int)$code ?>" <?= in_array((string)$code, (array)$sub_prefectures, true) ? 'selected' : '' ?>>
+                        <?= h($name) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <small>
+                ※ 複数の都道府県を通った場合は、<br>
+                ・Windows：<strong>Ctrl</strong> キーを押しながらクリック<br>
+                ・Mac：<strong>⌘（Command）</strong> キーを押しながらクリック<br>
+                すると、複数選択できます。
+            </small>
+        </label>
+
+        <label>
+            説明（任意）
+            <textarea name="description"><?= h($description) ?></textarea>
+        </label>
+
+        <label>
+            住所（任意）
+            <input type="text" name="address" value="<?= h($address) ?>" placeholder="例：東京都千代田区〇〇...">
+            <small>※ Google Maps のURLではなく、住所を書けます。</small>
+        </label>
+
+        <label>
+            目的地のサイト（任意）
+            <input type="text" name="site_url" value="<?= h($site_url) ?>" placeholder="https://example.com">
+        </label>
+
+        <hr>
+
+        <h3>ルート</h3>
+
+        <div class="point-block">
+            <div class="point-title">スタート</div>
+            <label>
+                地点名（任意）
+                <input type="text" name="start_label" value="<?= h($startLabel) ?>" placeholder="例：自宅・駅・IC名など">
+            </label>
+            <label>
+                住所（任意）
+                <input type="text" name="start_address" value="<?= h($startAddress) ?>" placeholder="例：〇〇県〇〇市...">
+            </label>
+        </div>
+
+        <h4 style="margin-top:16px;">中間地点</h4>
+        <div id="middle-points"></div>
+        <button type="button" onclick="addMiddlePoint()">＋ 中間地点を追加</button>
+
+        <div class="point-block">
+            <div class="point-title">ゴール</div>
+            <label>
+                地点名（任意）
+                <input type="text" name="goal_label" value="<?= h($goalLabel) ?>" placeholder="例：宿泊地・観光地など">
+            </label>
+            <label>
+                住所（任意）
+                <input type="text" name="goal_address" value="<?= h($goalAddress) ?>" placeholder="例：〇〇県〇〇市...">
+            </label>
+        </div>
+
+        <hr>
+
+        <h3>写真</h3>
+        <label>
+            写真（最大10枚まで）
+            <input type="file" name="photos[]" accept="image/*" multiple>
+            <small>
+                ※ まとめて選択できます（最大10枚）。<br>
+                ✅ <strong>1枚目に選択した写真がサムネになります。</strong><br>
+                ・Windows：<strong>Ctrl</strong> / ・Mac：<strong>⌘</strong> キーで複数選択
+            </small>
+        </label>
+
+        <button type="submit">投稿する</button>
+    </form>
+
+    <script>
+        function addMiddlePoint() {
+            const wrap = document.getElementById('middle-points');
+            const div = document.createElement('div');
+            div.className = 'point-block';
+            div.innerHTML = `
+        <div class="point-title">中間</div>
+        <label>
+            地点名（任意）
+            <input type="text" name="middle_label[]" placeholder="中間地点名">
+        </label>
+        <label>
+            住所（任意）
+            <input type="text" name="middle_address[]" placeholder="例：〇〇県〇〇市...">
+        </label>
+        <button type="button" onclick="this.parentNode.remove()">削除</button>
+    `;
+            wrap.appendChild(div);
+        }
+    </script>
+
+</body>
+
+</html>
