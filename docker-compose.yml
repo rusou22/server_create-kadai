@@ -1,6 +1,3 @@
-# Docker Compose の定義ファイル
-# ここでは 3つのサービス（db / phpmyadmin / web）を立ち上げる構成
-
 services:
   # =============================
   # 1) MySQL（データベース）
@@ -71,12 +68,11 @@ services:
     depends_on:
       - db
 
-    # phpMyAdmin 側の接続設定
     environment:
-      # 接続先ホスト（Composeのサービス名 db を指定すると内部ネットワークで解決される）
+      # 接続先ホスト
       PMA_HOST: db
 
-      # phpMyAdminにログインするユーザー（ここではroot）
+      # phpMyAdminにログインするユーザー
       PMA_USER: root
       PMA_PASSWORD: rootpassword
 
@@ -84,7 +80,6 @@ services:
       TZ: Asia/Tokyo
 
     # ブラウザで開く用のポート
-    # http://localhost:8081 で phpMyAdmin にアクセスできる
     ports:
       - "8081:80"
 
@@ -93,14 +88,10 @@ services:
   # 3) Web（PHP/Apacheなどアプリ本体）
   # =============================
   web:
-    # 自作Dockerfileからビルドして使う
     build:
-      # ビルドの基準ディレクトリ（プロジェクトルート）
       context: .
-      # 使用するDockerfileの場所
       dockerfile: ./php/Dockerfile
 
-    # コンテナ名
     container_name: drive_mapping_web
 
     # 自動再起動
@@ -112,12 +103,6 @@ services:
 
     # ソースコードや設定ファイルをコンテナへマウント
     volumes:
-      # ローカルの ./htdocs を、コンテナのApache公開ディレクトリへ
-      # → つまりローカルで編集すると即コンテナ側に反映される
-      - ./htdocs:/var/www/html
-
-      # PHP設定ファイル（php.ini）をコンテナへ差し替え
-      - ./php/php.ini:/usr/local/etc/php/php.ini
 
     # ブラウザアクセス用
     # http://localhost:8080 でアプリにアクセスできる
@@ -128,10 +113,5 @@ services:
     environment:
       TZ: Asia/Tokyo
 
-
-# =============================
-# named volume 定義
-# =============================
 volumes:
-  # db_data は MySQL のデータ保存用（永続化）
   db_data:
